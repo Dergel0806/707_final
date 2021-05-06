@@ -96,7 +96,7 @@ class GNN(nn.Module):
         
         if train:
             # MSE loss with l1 regularization encouraging a sparse adj matrix
-            loss = self.loss(yp, yt) + self.R*torch.norm(self.A, 1) - self.R2*torch.norm(self.A, 2)
+            loss = self.loss(yp, yt) + self.R*torch.norm(self.A, 1) #- self.R2*torch.norm(self.A, 2)
             mse = self.loss(yp, yt)
             return loss, mse
         else:
@@ -159,42 +159,94 @@ class Tester(object):
 
 
 '''load data'''
-def load_time_series(network_size=10,path='..'):
+def load_data(network_size=10,path='..'):
     ''' 
         load DREAM4 time-series data with specified network size
         input:
             network_size: 10 or 100 genes
             path: the path to DREAM4 datasets folder
         output:
-            networks: a list with data of 5 networks of specified size
-                      each network has a list of 5 np arrays with 
-                      time-series data of 21 time points
+            networks: a list with data of 5 dictionaries 
+            each includes data of:
+            ['time_series_restoring', 'time_series_perturbing', 'wild_type', 'knock_outs']
+                (5, 11, 10)             (5, 11, 10)              (6,10)        (10,10)
     '''
     
     networks=[]
     for i in range(5):
-        network = []
+        
+        # network is a dictionary containing all data of this network
+        # keys: wild_type, time_series, knockouts
+        network = {}
+        
+        
+        wild_type = []
+        time_series = []        
+        kos = []
+        
+        
+        # read time-series data
         folder = 'insilico_size'+str(network_size)+'_'+str(i+1)
         fname = folder+'/' +folder + '_timeseries.tsv'
         f = open(fname,'r')
         lines=f.readlines()
+        f.close()
         
         data=[]
         count=0
         for l in lines[2:]:
             if l[0]!='\n' and count<20:
+                
                 d = np.array(l.strip().split())[1:]
                 d=d.astype('float')
                 data.append(d)
+                    
+                if (l.strip().split()[0]=='0.0'):
+                    wild_type.append(d)
+                    
                 count+=1
             elif count==20:
                 d = np.array(l.strip().split())[1:]
                 d=d.astype('float')
                 data.append(d)
                 data=np.array(data)
-                network.append(data)
+                time_series.append(data)
                 count=0
                 data=[]
+        
+        time_series = np.array(time_series)
+        
+        network['time_series_restoring'] = time_series[:,10:,:]
+        network['time_series_perturbing'] = time_series[:,:11,:]
+        
+        
+        # read wildtype 
+        
+        fname = folder+'/' +folder + '_wildtype.tsv'
+        f = open(fname,'r')
+        lines=f.readlines()
+        f.close()
+        
+        d = np.array(lines[1].strip().split())
+        d=d.astype('float')
+        
+        wild_type.append(d)
+        network['wild_type'] = np.array(wild_type) 
+        
+        # read knockouts
+        fname = folder+'/' +folder + '_knockouts.tsv'
+        f = open(fname,'r')
+        lines=f.readlines()
+        f.close()
+        
+        for l in lines[1:]:
+            d = np.array(l.strip().split())
+            d=d.astype('float')
+            kos.append(d)
+        kos=np.array(kos)
+        
+        network['knock_outs'] = kos 
+        
         networks.append(network)
         
     return networks
@@ -204,28 +256,37 @@ def load_time_series(network_size=10,path='..'):
 
 def make_samples(dataset,device):
     '''
-        make samples (x,y) using the time-series data
+        make samples (x,y) using the data constructed using the load_data function
         inputs:
-            dataset: the list with data of a network
+            dataset: the dictionary consisting data of:
+                'time_series_restoring', 'time_series_perturbing', 'wild_type', 'knock_outs'
         output:
-            splitted: list with samples from 5 time-series matrices
             mixed: mixed samples
             
     '''
     
-    splitted = []
     mixed = []
-    for matrix in dataset:
-        block = []
-        for i in range(20):
+    time_series = []
+    wild_type = []
+    
+    for matrix in dataset['time_series_restoring']:
+        for i in range(len(matrix)-1):
             x = torch.FloatTensor(matrix[i].reshape(-1,1)).to(device)
             y = torch.FloatTensor(matrix[i+1].reshape(-1,1)).to(device)
             sample=(x,y)
             mixed.append(sample)
-            block.append(sample)
-        splitted.append(block)
-        
-    return splitted,mixed
+            time_series.append(sample)
+    
+    wt = dataset['wild_type']
+    for i in range(len(dataset['wild_type'])):
+        for j in range(len(dataset['wild_type'])):
+            x = torch.FloatTensor(wt[i].reshape(-1,1)).to(device)
+            y = torch.FloatTensor(wt[j].reshape(-1,1)).to(device)
+            sample=(x,y)
+            mixed.append(sample)
+            wild_type.append(sample)
+            
+    return mixed, time_series, wild_type
     
 
 
@@ -283,13 +344,13 @@ if __name__ == "__main__":
     
     '''loading data'''
     # data of 5 networks, each has 5 matrices of time-series data
-    networks = load_time_series(n_nodes,'..')
+    networks = load_data(n_nodes,'..')
     
     # choose one network as the dataset to work with 
-    time_series = networks[network_number]
+    network_data = networks[network_number]
     
     # get samples
-    splitted_data, mixed_data = make_samples(time_series,device)
+    mixed_data, time_series_data, wild_type_data,  = make_samples(network_data,device)
     
     # use mixed data and split into train/test set
     train_data,test_data = split_mixed(mixed_data,0.8)

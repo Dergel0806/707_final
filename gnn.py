@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 
 '''GNN model'''
 class GNN(nn.Module):
-    def __init__(self, n=10, dim=5, layers=3, r=0.5, r2=0.5 ):
+    def __init__(self, n=10, dim=5, layers=3, r=0.5, r2=0.5,v=0.1 ):
         super(GNN, self).__init__()
         
         self.dim=dim
@@ -30,7 +30,7 @@ class GNN(nn.Module):
                     for _ in range(self.layer_gnn)])
         
         # the learned adjacency matrix (n,n)
-        self.A = torch.nn.Parameter(torch.ones((n,n)))
+        self.A = torch.nn.Parameter(torch.zeros((n,n)))
         #self.A = torch.nn.init.xavier_uniform(self.A)
         self.A.requires_grad = True
         
@@ -40,6 +40,7 @@ class GNN(nn.Module):
         self.W.requires_grad = True
       
         # MSE loss with l1 regularization
+        self.v = v
         self.R = r
         self.R2 = r2
         self.loss = nn.MSELoss()
@@ -96,7 +97,8 @@ class GNN(nn.Module):
         
         if train:
             # MSE loss with l1 regularization encouraging a sparse adj matrix
-            loss = self.loss(yp, yt) + self.R*torch.norm(self.A, 1) #- self.R2*torch.norm(self.A, 2)
+            loss = 10*self.loss(yp, yt) + self.R*torch.norm(self.A, 1) - self.R2*torch.norm(self.A, 2)\
+                - self.v*self.A.var()
             mse = self.loss(yp, yt)
             return loss, mse
         else:
@@ -311,24 +313,66 @@ def split_mixed(mixed_data,ratio=0.8):
     
 
 
+def checkadj(A,t=-1):
+    regs=[[0,1],[0,2],[0,3],[0,4],[2,3],[2,6],[3,2],[5,1],[6,2],[6,3],[7,1],[7,5],[8,9],[9,2],[9,3]]
+    #regs=np.array(regs)
+    size=A.shape[0]*A.shape[1]
+    score=0
+
+    tp=0
+    tn=0
+    fp=0
+    fn=0
+    
+    if (t==-1):
+        t=2*np.abs(A).std()
+    
+    gp=len(regs)
+    gn=size-gp
+    
+    for i in range(len(A)):
+        for j in range(len(A)):
+            if [i,j] in regs:
+                if np.abs(A[i,j])>t:
+                    score+=1
+                    tp+=1
+                else:
+                    fn+=1
+            else:
+                if np.abs(A[i,j])<t:
+                    score+=1
+                    tn+=1
+                else:
+                    fp+=1
+    
+    recall = tp/(fn+tp+1e-7)
+    precision = tp/(tp+fp+1e-7)
     
     
+    return score/size,recall,precision, score,(tp+fp)
     
 if __name__ == "__main__":
 
     '''hyperparameters'''
-    network_number=0
+    network_number=4
+    
     n_nodes=10
     dim=20
-    layers=3 
-    r = 0.2
-    r2 = 0 # encourage large A
-    epochs=100
-    lr=0.01
-    lr_decay=1
+    layers=2
+    v = 0
+    r = 0.0001#1e-4
+    r2 =  0.0006#100*r # 
+    epochs=50
+    lr=0.005
+    lr_decay=0.8
     decay_interval=10
+    (0.0739 + 0.077 + 0.0698+0.0770+0.089)/5
+    (0.088 + 0.07+0.069+0.07+0.068 )/5
+    #checkadj(a,t=0)
     
+    ( 0.0562 + 0.0609 + 0.0593 + 0.0635 + 0.598)/5
     
+    # (a>np.abs(a).std())
     
     """CPU or GPU."""
     if torch.cuda.is_available():
@@ -350,17 +394,17 @@ if __name__ == "__main__":
     network_data = networks[network_number]
     
     # get samples
-    mixed_data, time_series_data, wild_type_data,  = make_samples(network_data,device)
+    mixed_data, time_series_data, wild_type_data  = make_samples(network_data,device)
     
     # use mixed data and split into train/test set
-    train_data,test_data = split_mixed(mixed_data,0.8)
+    train_data,test_data = split_mixed(time_series_data,0.8)
     
-    
+    #train_data=train_data+wild_type_data
 
     
     """Set a model."""
     torch.manual_seed(1234)
-    model = GNN(n_nodes, dim, layers, r, r2).to(device)
+    model = GNN(n_nodes, dim, layers, r, r2, v).to(device)
     trainer = Trainer(model)
     tester = Tester(model)
     
@@ -395,6 +439,20 @@ if __name__ == "__main__":
 
         print('\t'.join(map(str, [epoch, time, loss_train, rmse_test ,abs_err])))
 
+
+
+
+    a=model.A
+    a=a.detach().numpy()
+    #t=np.abs(a).std()*3
+    acc, recall, precision, score, positives = checkadj(a,t=-1)
+    print('acc\t recall\t precision\t score\t positives')
+    print(acc, recall, precision, score, positives)
+    
+    
+    
+    
+    
     
     '''plot loss'''
     x_axis = np.arange(epochs)    
@@ -417,8 +475,10 @@ if __name__ == "__main__":
     fig2, ax2 = plt.subplots()
     ax2.plot(x_axis, y_axis2, color='blue',label='Test RMSE')
     ax2.plot(x_axis, y_axis3,color='red',label='Train RMSE')
+    #ax2.set(xlabel='Epoch', ylabel='RMSE',
+    #   title='Test/Train RMSE (Network '+str(network_number+1)+')')
     ax2.set(xlabel='Epoch', ylabel='RMSE',
-       title='Test/Train RMSE (Network '+str(network_number+1)+')')
+       title='Test/Train RMSE (GNN, size 10)')
     ax2.legend()
     ax2.grid()
     
